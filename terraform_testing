@@ -1,0 +1,145 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+  required_version = ">= 1.5.0"
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+variable "aws_region" {
+  description = "AWS region to deploy resources into"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "ami_id" {
+  description = "AMI ID for the EC2 instance"
+  type        = string
+  default     = "ami-0c02fb55956c7d316"
+}
+
+resource "aws_security_group" "ec2_sg" {
+  name        = "ec2-basic-sg"
+  description = "Allow SSH and HTTP access"
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnet_ids" "default" {
+  vpc_id = data.aws_vpc.default.id
+}
+
+resource "aws_lb" "web" {
+  name               = "web-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.ec2_sg.id]
+  subnets            = data.aws_subnet_ids.default.ids
+}
+
+resource "aws_lb_target_group" "web" {
+  name     = "web-target-group"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = data.aws_vpc.default.id
+
+  health_check {
+    path                = "/"
+    protocol            = "HTTP"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+}
+
+resource "aws_lb_listener" "web" {
+  load_balancer_arn = aws_lb.web.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.web.arn
+  }
+}
+
+resource "aws_launch_template" "web" {
+  name_prefix   = "web-lt-"
+  image_id      = var.ami_id
+  instance_type = var.instance_type
+
+  network_interfaces {
+    security_groups = [aws_security_group.ec2_sg.id]
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+
+    tags = {
+      Name = "basic-ec2-instance"
+    }
+  }
+}
+
+resource "aws_autoscaling_group" "web" {
+  name                = "web-asg"
+  min_size            = 1
+  max_size            = 2
+  desired_capacity    = 1
+  vpc_zone_identifier = data.aws_subnet_ids.default.ids
+  target_group_arns   = [aws_lb_target_group.web.arn]
+
+  launch_template {
+    id      = aws_launch_template.web.id
+    version = "$Latest"
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "basic-ec2-instance"
+    propagate_at_launch = true
+  }
+}
+
+output "alb_dns_name" {
+  description = "DNS name of the application load balancer"
+  value       = aws_lb.web.dns_name
+}
+
+output "autoscaling_group_name" {
+  description = "Name of the autoscaling group"
+  value       = aws_autoscaling_group.web.name
+}
