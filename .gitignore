@@ -6,3 +6,6 @@
 crash.log
 crash.*.log
 override.tf
+*.pcap
+**/project-files/
+*.qcow2
